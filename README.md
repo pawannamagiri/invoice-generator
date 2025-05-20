@@ -1,7 +1,6 @@
 # Invoice Generator
 
 A web application for generating and managing invoices, built with SvelteKit.
-
 ## Features
 
 - Create and manage invoices
