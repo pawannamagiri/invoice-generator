@@ -15,10 +15,57 @@
     let productError = null;
     let productLoading = false;
 
+    const bank = {
+            name: 'AXIS BANK',
+            accountNo: '921020050654441',
+            ifsc: 'UTIB0002744',
+            branch: 'HYDERNAGAR(V)'
+    };
+
+    // Function to generate a sequential invoice number
+    // If increment is true, it will increment the sequence and return the new number
+    // Otherwise, it will just return the current number without incrementing
+    async function generateInvoiceNumber(increment = false) {
+        const date = new Date();
+        const currentYear = date.getFullYear();
+
+        try {
+            // Get the invoice sequence from meta_data
+            const response = await fetch('/api/meta_data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ increment: increment })
+            });
+
+            if (!response.ok) {
+                console.log(response)
+                throw new Error('Failed to get invoice sequence');
+            }
+
+            const data = await response.json();
+            const sequence = data.last_invoice_sequence+1;
+
+            // Format: INV-YYYY-NNNN where NNNN is the sequential number padded to 4 digits
+            return `INV-${currentYear}-${sequence.toString().padStart(4, '0')}`;
+        } catch (error) {
+            console.error('Error generating invoice number:', error);
+            // Fallback to a timestamp-based number in case of error
+            return `INV-${currentYear}-ERR-${Date.now().toString().substr(-4)}`;
+        }
+    }
+
+    // Function to get current date in YYYY-MM-DD format for the date input
+    function getCurrentDate() {
+        const date = new Date();
+        return date.toISOString().split('T')[0];
+    }
+
     let invoice = {
-        invoiceNo: '',
-        invoiceDate: '',
-        reverseCharge: 'N',
+        invoiceNo: '',  // Will be set by generateInvoiceNumber
+        invoiceDate: getCurrentDate(),
+        reverseCharge: 'No',
         state: 'TELANGANA',
         billTo: {
             name: '',
@@ -32,12 +79,7 @@
         cgst: 0,
         sgst: 0,
         totalAfterTax: 0,
-        bank: {
-            name: 'AXIS BANK',
-            accountNo: '921020050654441',
-            ifsc: 'UTIB0002744',
-            branch: 'HYDERNAGAR(V)'
-        }
+        created_at: new Date()
     };
 
     $: {
@@ -60,14 +102,20 @@
     onMount(async () => {
         try {
             loading = true;
-            const response = await fetch('/api/customers');
-            if (!response.ok) {
+
+            // Fetch customers
+            const customersResponse = await fetch('/api/customers');
+            if (!customersResponse.ok) {
                 throw new Error('Failed to fetch customers');
             }
-            customers = await response.json();
+            customers = await customersResponse.json();
+
+            // Generate initial invoice number (without incrementing)
+            invoice.invoiceNo = await generateInvoiceNumber(false);
+
         } catch (err) {
             error = err.message;
-            console.error('Error fetching customers:', err);
+            console.error('Error in onMount:', err);
         } finally {
             loading = false;
         }
@@ -113,6 +161,75 @@
     // Function to close the modal
     function closeImportModal() {
         showModal = false;
+    }
+
+    // Function to save the invoice
+    async function saveInvoice() {
+        try {
+            // Ensure created_at is set
+            if (!invoice.created_at) {
+                invoice.created_at = new Date();
+            }
+
+            // Increment the invoice sequence for the next invoice
+            // This is the only place where we increment the sequence
+            await generateInvoiceNumber(true);
+
+            // Send the invoice data to the API endpoint
+            const response = await fetch('/api/invoices', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(invoice)
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to save invoice');
+            }
+
+            const savedInvoice = await response.json();
+            console.log('Invoice saved successfully:', savedInvoice);
+
+            alert('Invoice saved successfully!');
+
+            // Reset the form to create a new invoice
+            await resetForm();
+        } catch (error) {
+            console.error('Error saving invoice:', error);
+            alert('Failed to save invoice: ' + error.message);
+        }
+    }
+
+    // Function to reset the form and create a new invoice
+    async function resetForm() {
+        if (confirm('Are you sure you want to reset the form? All unsaved changes will be lost.')) {
+            try {
+                const newInvoiceNo = await generateInvoiceNumber(false);
+
+                invoice = {
+                    invoiceNo: newInvoiceNo,
+                    invoiceDate: getCurrentDate(),
+                    reverseCharge: 'No',
+                    state: 'TELANGANA',
+                    billTo: {
+                        name: '',
+                        address: '',
+                        gstin: '',
+                        state: ''
+                    },
+                    items: [],
+                    cgst: 0,
+                    sgst: 0,
+                    totalAfterTax: 0,
+                    created_at: new Date()
+                };
+                selectedCustomerId = '';
+            } catch (error) {
+                console.error('Error resetting form:', error);
+                alert('Failed to generate a new invoice number. Please try again.');
+            }
+        }
     }
 
     // Function to search for a customer by phone or GSTIN
@@ -226,7 +343,24 @@
     <div class="grid grid-cols-4 gap-4 text-sm">
         <div>
             <label class="block font-medium">Invoice No</label>
-            <input type="text" bind:value={invoice.invoiceNo} class="mt-1 w-full rounded border-gray-300" />
+            <div class="flex">
+                <input type="text" bind:value={invoice.invoiceNo} class="mt-1 w-full rounded-l border-gray-300 bg-gray-100" readonly />
+                <button 
+                    type="button" 
+                    on:click={async () => {
+                        try {
+                            invoice.invoiceNo = await generateInvoiceNumber(false);
+                        } catch (error) {
+                            console.error('Error generating invoice number:', error);
+                            alert('Failed to generate a new invoice number. Please try again.');
+                        }
+                    }} 
+                    class="mt-1 bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded-r text-sm"
+                    title="Generate new invoice number"
+                >
+                    ↻
+                </button>
+            </div>
         </div>
         <div>
             <label class="block font-medium">Invoice Date</label>
@@ -234,7 +368,12 @@
         </div>
         <div>
             <label class="block font-medium">Reverse Charge (Y/N)</label>
-            <input type="text" bind:value={invoice.reverseCharge} class="mt-1 w-full rounded border-gray-300" />
+<!--            <input type="text" bind:value={invoice.reverseCharge} class="mt-1 w-full rounded border-gray-300" />-->
+
+            <select bind:value={invoice.reverseCharge} class="mt-1 w-full rounded border-gray-300">
+                <option value="Yes">Yes</option>
+                <option value="No" selected={true}>No</option>
+            </select>
         </div>
         <div>
             <label class="block font-medium">State</label>
@@ -326,6 +465,17 @@
             {/if}
         </div>
 
+        <!-- Add Empty Item Button -->
+        <div class="mb-4 flex justify-end">
+            <button 
+                type="button" 
+                on:click={addItem} 
+                class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+                Add Empty Item
+            </button>
+        </div>
+
         <div class="space-y-2">
             {#each invoice.items as item}
                 <div class="grid grid-cols-6 gap-2 text-sm">
@@ -377,25 +527,41 @@
         <div class="grid grid-cols-2 gap-4">
             <div>
                 <label class="block font-medium">Bank Name</label>
-                <input type="text" bind:value={invoice.bank.name} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.name} class="mt-1 w-full rounded border-gray-300" />
             </div>
             <div>
                 <label class="block font-medium">Account No</label>
-                <input type="text" bind:value={invoice.bank.accountNo} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.accountNo} class="mt-1 w-full rounded border-gray-300" />
             </div>
             <div>
                 <label class="block font-medium">IFSC Code</label>
-                <input type="text" bind:value={invoice.bank.ifsc} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.ifsc} class="mt-1 w-full rounded border-gray-300" />
             </div>
             <div>
                 <label class="block font-medium">Branch</label>
-                <input type="text" bind:value={invoice.bank.branch} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.branch} class="mt-1 w-full rounded border-gray-300" />
             </div>
         </div>
     </div>
 
     <!-- Signature -->
-    <div class="flex justify-end border-t pt-6">
+    <div class="flex justify-between border-t pt-6">
+        <div class="flex space-x-2">
+            <button 
+                type="button" 
+                on:click={saveInvoice} 
+                class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium"
+            >
+                Save Invoice
+            </button>
+            <button 
+                type="button" 
+                on:click={resetForm} 
+                class="bg-gray-600 hover:bg-gray-700 text-white px-6 py-2 rounded font-medium"
+            >
+                New Invoice
+            </button>
+        </div>
         <div class="text-right">
             <p class="font-medium">For KAKATIYA PRINTING INKS</p>
             <p class="italic text-sm">Authorized Signature</p>
