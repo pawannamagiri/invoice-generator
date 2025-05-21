@@ -13,6 +13,7 @@
 			<a href="/">Home</a>
 			<a href="/invoices">Invoices</a>
 			<a href="/customers">Customers</a>
+			<a href="/products">Products</a>
 			<a href="generateInvoice">New Invoice</a>
 		</nav>
 

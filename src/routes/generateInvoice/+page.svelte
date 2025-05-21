@@ -8,6 +8,13 @@
     let searchError = null;
     let searchLoading = false;
 
+    let addedProducts = [];
+
+    // Product code search
+    let productCode = '';
+    let productError = null;
+    let productLoading = false;
+
     let invoice = {
         invoiceNo: '',
         invoiceDate: '',
@@ -20,11 +27,11 @@
             state: ''
         },
         items: [
-            { particulars: '', hsn: '', qty: '', rate: '', amount: '' }
+
         ],
-        cgst: '',
-        sgst: '',
-        totalAfterTax: '',
+        cgst: 0,
+        sgst: 0,
+        totalAfterTax: 0,
         bank: {
             name: 'AXIS BANK',
             accountNo: '921020050654441',
@@ -32,6 +39,18 @@
             branch: 'HYDERNAGAR(V)'
         }
     };
+
+    $: {
+        // Update amount for each item when rate or qty changes
+        invoice.items = invoice.items.map(item => ({
+            ...item,
+            amount: (item.rate || 0) * (item.qty || 0)
+        }));
+        invoice.sgst = invoice.items.reduce((sum, item) => sum + (item.amount || 0) * 0.09, 0);
+        invoice.cgst = invoice.items.reduce((sum, item) => sum + (item.amount || 0) * 0.09, 0);
+        invoice.totalAfterTax = invoice.items.reduce((sum, item) => sum + (item.amount || 0), 0)+ invoice.cgst + invoice.sgst;
+    }
+
 
     let customers = [];
     let selectedCustomerId = '';
@@ -141,6 +160,46 @@
             searchLoading = false;
         }
     }
+
+    // Function to search for a product by product code and add it to the invoice
+    async function searchProduct() {
+        if (!productCode.trim()) {
+            productError = 'Please enter a product code';
+            return;
+        }
+
+        productError = null;
+        productLoading = true;
+
+        try {
+            const response = await fetch(`/api/products/code?code=${productCode}`);
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.error || 'Failed to search for product');
+            }
+
+            const product = await response.json();
+
+            // Add the product to the invoice items
+            invoice.items = [...invoice.items, {
+                name: product.name,
+                hsn: '',
+                qty: 1,
+                rate: product.price,
+                amount: product.price
+            }];
+
+            console.log(invoice.items);
+            // Reset the product code
+            productCode = '';
+        } catch (error) {
+            console.error('Error searching for product:', error);
+            productError = error.message || 'Failed to search for product';
+        } finally {
+            productLoading = false;
+        }
+    }
 </script>
 
 <div class="max-w-5xl mx-auto p-8 bg-white shadow rounded space-y-6">
@@ -236,12 +295,43 @@
     <!-- Items Table -->
     <div class="pt-4 border-t">
         <h2 class="text-xl font-semibold mb-2">Items</h2>
+
+        <!-- Add Product by Code -->
+        <div class="bg-gray-50 p-4 rounded border mb-4">
+            <h3 class="text-lg font-medium mb-2">Add Product by Code</h3>
+            <div class="flex items-end space-x-2">
+                <div class="flex-grow">
+                    <label for="product-code" class="block font-medium text-sm mb-1">Product Code</label>
+                    <input 
+                        id="product-code"
+                        type="text" 
+                        bind:value={productCode} 
+                        placeholder="Enter product code" 
+                        class="w-full rounded border-gray-300 p-2 border"
+                    />
+                </div>
+                <button 
+                    type="button" 
+                    on:click={searchProduct} 
+                    class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                    disabled={productLoading}
+                >
+                    {productLoading ? 'Adding...' : 'Add Product'}
+                </button>
+            </div>
+            {#if productError}
+                <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-2">
+                    {productError}
+                </div>
+            {/if}
+        </div>
+
         <div class="space-y-2">
-            {#each invoice.items as item, i}
+            {#each invoice.items as item}
                 <div class="grid grid-cols-6 gap-2 text-sm">
                     <div>
-                        <label class="block font-medium">Particulars</label>
-                        <input type="text" bind:value={item.particulars} class="mt-1 w-full rounded border-gray-300" />
+                        <label class="block font-medium">Name</label>
+                        <input type="text" bind:value={item.name} class="mt-1 w-full rounded border-gray-300" />
                     </div>
                     <div>
                         <label class="block font-medium">HSN Code</label>
@@ -261,23 +351,23 @@
                     </div>
                 </div>
             {/each}
-            <button type="button" on:click={addItem} class="text-blue-600 text-sm mt-2">+ Add Item</button>
+
         </div>
     </div>
 
     <!-- Tax and Totals -->
     <div class="grid grid-cols-3 gap-4 border-t pt-4 text-sm">
         <div>
-            <label class="block font-medium">CGST</label>
+            <label class="block font-medium">CGST(9%)</label>
             <input type="number" bind:value={invoice.cgst} class="mt-1 w-full rounded border-gray-300" />
         </div>
         <div>
-            <label class="block font-medium">SGST</label>
+            <label class="block font-medium">SGST(9%)</label>
             <input type="number" bind:value={invoice.sgst} class="mt-1 w-full rounded border-gray-300" />
         </div>
         <div>
             <label class="block font-medium">Total After Tax</label>
-            <input type="number" bind:value={invoice.totalAfterTax} class="mt-1 w-full rounded border-gray-300" />
+            <input type="number" bind:value={invoice.totalAfterTax} class="mt-1 w-full rounded border-gray-300 bg-green-300" disabled/>
         </div>
     </div>
 
