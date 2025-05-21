@@ -1,5 +1,5 @@
 import { json } from '@sveltejs/kit';
-import { getInvoices, createInvoice } from '$lib/server/invoices.js';
+import { getInvoices, createInvoice, deleteInvoice } from '$lib/server/invoices.js';
 
 export async function GET() {
     try {
@@ -19,5 +19,24 @@ export async function POST({ request }) {
     } catch (error) {
         console.error('Error creating invoice:', error);
         return json({ error: 'Failed to create invoice' }, { status: 500 });
+    }
+}
+
+export async function DELETE({ url }) {
+    try {
+        const id = url.searchParams.get('id');
+        if (!id) {
+            return json({ error: 'Invoice ID is required' }, { status: 400 });
+        }
+
+        const success = await deleteInvoice(id);
+        if (success) {
+            return json({ success: true });
+        } else {
+            return json({ error: 'Invoice not found' }, { status: 404 });
+        }
+    } catch (error) {
+        console.error('Error deleting invoice:', error);
+        return json({ error: 'Failed to delete invoice' }, { status: 500 });
     }
 }

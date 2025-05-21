@@ -154,7 +154,7 @@
                         <th class="py-2 px-4 text-left border border-gray-300">Name</th>
                         <th class="py-2 px-4 text-left border border-gray-300">GSTIN</th>
                         <th class="py-2 px-4 text-left border border-gray-300">Phone</th>
-                        <th class="py-2 px-4 text-left border border-gray-300">State</th>
+                        <th class="py-2 px-4 text-left border border-gray-300">Address</th>
                         <th class="py-2 px-4 text-left border border-gray-300">Actions</th>
                     </tr>
                 </thead>

@@ -27,7 +27,7 @@
 	</main>
 
 	<footer>
-		<p>© 2025 Invoice Generator</p>
+		<p>© 2025 Invoice Generator. Created by <a target="_blank" class="underline text-blue-900" href="https://www.linkedin.com/in/pawan-namagiri/">Pawan Namagiri 🇮🇳</a></p>
 	</footer>
 </div>
 

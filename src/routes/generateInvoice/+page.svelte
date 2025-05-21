@@ -1,5 +1,15 @@
 <script>
     import { onMount } from 'svelte';
+    import { goto } from '$app/navigation';
+    import { browser } from '$app/environment';
+
+    // Import html2pdf only in browser environment
+    let html2pdf;
+    if (browser) {
+        import('html2pdf.js').then(module => {
+            html2pdf = module.default;
+        });
+    }
 
     // Modal state
     let showModal = false;
@@ -98,6 +108,39 @@
     let selectedCustomerId = '';
     let loading = false;
     let error = null;
+    let viewOnly = false;
+
+    // Function to load an existing invoice by ID
+    async function loadInvoice(id) {
+        try {
+            loading = true;
+            viewOnly = true; // Set view-only mode when loading an existing invoice
+
+            const response = await fetch(`/api/invoices/${id}`);
+            if (!response.ok) {
+                throw new Error('Failed to fetch invoice');
+            }
+
+            const loadedInvoice = await response.json();
+            invoice = loadedInvoice;
+
+            // Find the customer in the dropdown and select it if possible
+            if (invoice.billTo && customers.length > 0) {
+                const customer = customers.find(c => 
+                    c.name === invoice.billTo.name || 
+                    c.party_name === invoice.billTo.name
+                );
+                if (customer) {
+                    selectedCustomerId = customer._id;
+                }
+            }
+        } catch (err) {
+            error = err.message;
+            console.error('Error loading invoice:', err);
+        } finally {
+            loading = false;
+        }
+    }
 
     onMount(async () => {
         try {
@@ -110,8 +153,17 @@
             }
             customers = await customersResponse.json();
 
-            // Generate initial invoice number (without incrementing)
-            invoice.invoiceNo = await generateInvoiceNumber(false);
+            // Check if we have an invoice ID in the URL
+            const url = new URL(window.location.href);
+            const invoiceId = url.searchParams.get('id');
+
+            if (invoiceId) {
+                // Load existing invoice
+                await loadInvoice(invoiceId);
+            } else {
+                // Generate initial invoice number for new invoice
+                invoice.invoiceNo = await generateInvoiceNumber(false);
+            }
 
         } catch (err) {
             error = err.message;
@@ -148,7 +200,13 @@
     }
 
     function addItem() {
-        invoice.items.push({ particulars: '', hsn: '', qty: '', rate: '', amount: '' });
+        invoice.items = [...invoice.items, {
+            name: '',
+            hsn: '',
+            qty: 0,
+            rate: 0,
+            amount: 0
+        }];
     }
 
     // Function to open the modal
@@ -161,6 +219,92 @@
     // Function to close the modal
     function closeImportModal() {
         showModal = false;
+    }
+
+    // Function to generate PDF from the invoice
+    async function generatePDF() {
+        // Check if we're in a browser environment
+        if (!browser) {
+            console.warn('PDF generation is only available in browser environment');
+            return;
+        }
+
+        // Wait for html2pdf to be loaded if it's not already
+        if (!html2pdf) {
+            try {
+                const module = await import('html2pdf.js');
+                html2pdf = module.default;
+            } catch (error) {
+                console.error('Failed to load html2pdf.js:', error);
+                alert('Failed to generate PDF: Could not load the PDF generation library');
+                return;
+            }
+        }
+
+        try {
+            // Get the invoice element
+            const invoiceElement = document.querySelector('.max-w-5xl');
+
+            // Clone the element to avoid modifying the original
+            const clonedInvoice = invoiceElement.cloneNode(true);
+
+            // Remove buttons and other elements not needed in the PDF
+            const buttonsToRemove = clonedInvoice.querySelectorAll('button');
+            buttonsToRemove.forEach(button => button.remove());
+
+            // Add styles to help with page breaks, especially for tables
+            const style = document.createElement('style');
+            style.textContent = `
+                /* Improve table handling across page breaks */
+                table { page-break-inside: auto; }
+                tr { page-break-inside: avoid; page-break-after: auto; }
+                td, th { page-break-inside: avoid; }
+                thead { display: table-header-group; }
+                tfoot { display: table-footer-group; }
+
+                /* Add a bit more spacing between elements to prevent crowding */
+                div, p, h1, h2, h3, h4, h5, h6 { page-break-inside: avoid; margin-bottom: 5px; }
+            `;
+            clonedInvoice.appendChild(style);
+
+            // Set options for the PDF
+            const options = {
+                margin: [15, 10, 15, 10], // top, right, bottom, left margins
+                filename: `invoice-${invoice.invoiceNo}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { 
+                    scale: 2,
+                    letterRendering: true,
+                    useCORS: true
+                },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { 
+                    mode: ['avoid-all', 'css', 'legacy'],
+                    before: '.page-break-before',
+                    after: '.page-break-after',
+                    avoid: '.page-break-avoid'
+                }
+            };
+
+            // Add a small delay to ensure all content is fully rendered
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            // Generate the PDF with special handling for overflow content
+            await html2pdf()
+                .from(clonedInvoice)
+                .set(options)
+                .toPdf()
+                .get('pdf')
+                .then((pdf) => {
+                    // Ensure proper handling of overflow content
+                    pdf.setDisplayMode('fullwidth');
+                    return pdf;
+                })
+                .save();
+        } catch (error) {
+            console.error('Error generating PDF:', error);
+            alert('Failed to generate PDF: ' + error.message);
+        }
     }
 
     // Function to save the invoice
@@ -192,6 +336,9 @@
             console.log('Invoice saved successfully:', savedInvoice);
 
             alert('Invoice saved successfully!');
+
+            // Generate PDF after successful save
+            await generatePDF();
 
             // Reset the form to create a new invoice
             await resetForm();
@@ -319,16 +466,30 @@
     }
 </script>
 
+<svelte:head>
+    <title>{viewOnly ? `View Invoice ${invoice.invoiceNo}` : 'Generate New Invoice'} | Invoice Generator</title>
+</svelte:head>
+
 <div class="max-w-5xl mx-auto p-8 bg-white shadow rounded space-y-6">
+    <!-- Page Title -->
+    {#if viewOnly}
+        <div class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4" role="alert">
+            <p class="font-bold">View Mode</p>
+            <p>You are viewing an existing invoice. Fields are read-only.</p>
+        </div>
+    {/if}
+
     <!-- Import Button -->
     <div class="flex justify-end mb-4">
-        <button 
-            type="button" 
-            on:click={openImportModal} 
-            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
-        >
-            Import
-        </button>
+        {#if !viewOnly}
+            <button 
+                type="button" 
+                on:click={openImportModal} 
+                class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
+            >
+                Import
+            </button>
+        {/if}
     </div>
 
     <!-- Header -->
@@ -364,20 +525,20 @@
         </div>
         <div>
             <label class="block font-medium">Invoice Date</label>
-            <input type="date" bind:value={invoice.invoiceDate} class="mt-1 w-full rounded border-gray-300" />
+            <input type="date" bind:value={invoice.invoiceDate} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
         </div>
         <div>
             <label class="block font-medium">Reverse Charge (Y/N)</label>
 <!--            <input type="text" bind:value={invoice.reverseCharge} class="mt-1 w-full rounded border-gray-300" />-->
 
-            <select bind:value={invoice.reverseCharge} class="mt-1 w-full rounded border-gray-300">
+            <select bind:value={invoice.reverseCharge} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly}>
                 <option value="Yes">Yes</option>
                 <option value="No" selected={true}>No</option>
             </select>
         </div>
         <div>
             <label class="block font-medium">State</label>
-            <input type="text" bind:value={invoice.state} class="mt-1 w-full rounded border-gray-300" />
+            <input type="text" bind:value={invoice.state} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
         </div>
     </div>
 
@@ -399,7 +560,7 @@
                 on:change={selectCustomer}
                 bind:value={selectedCustomerId}
                 class="mt-1 w-full rounded border-gray-300"
-                disabled={loading}
+                disabled={loading || viewOnly}
             >
                 <option value="">-- Select a customer --</option>
                 {#each customers as customer}
@@ -414,19 +575,19 @@
         <div class="grid grid-cols-2 gap-4 text-sm">
             <div>
                 <label class="block font-medium">Name</label>
-                <input type="text" bind:value={invoice.billTo.name} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" bind:value={invoice.billTo.name} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
             </div>
             <div>
                 <label class="block font-medium">GSTIN</label>
-                <input type="text" bind:value={invoice.billTo.gstin} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" bind:value={invoice.billTo.gstin} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
             </div>
             <div class="col-span-2">
                 <label class="block font-medium">Address</label>
-                <textarea bind:value={invoice.billTo.address} rows="2" class="mt-1 w-full rounded border-gray-300"></textarea>
+                <textarea bind:value={invoice.billTo.address} rows="2" class="mt-1 w-full rounded border-gray-300" disabled={viewOnly}></textarea>
             </div>
             <div>
                 <label class="block font-medium">State</label>
-                <input type="text" bind:value={invoice.billTo.state} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" bind:value={invoice.billTo.state} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
             </div>
         </div>
     </div>
@@ -435,69 +596,71 @@
     <div class="pt-4 border-t">
         <h2 class="text-xl font-semibold mb-2">Items</h2>
 
-        <!-- Add Product by Code -->
-        <div class="bg-gray-50 p-4 rounded border mb-4">
-            <h3 class="text-lg font-medium mb-2">Add Product by Code</h3>
-            <div class="flex items-end space-x-2">
-                <div class="flex-grow">
-                    <label for="product-code" class="block font-medium text-sm mb-1">Product Code</label>
-                    <input 
-                        id="product-code"
-                        type="text" 
-                        bind:value={productCode} 
-                        placeholder="Enter product code" 
-                        class="w-full rounded border-gray-300 p-2 border"
-                    />
+        {#if !viewOnly}
+            <!-- Add Product by Code -->
+            <div class="bg-gray-50 p-4 rounded border mb-4">
+                <h3 class="text-lg font-medium mb-2">Add Product by Code</h3>
+                <div class="flex items-end space-x-2">
+                    <div class="flex-grow">
+                        <label for="product-code" class="block font-medium text-sm mb-1">Product Code</label>
+                        <input 
+                            id="product-code"
+                            type="text" 
+                            bind:value={productCode} 
+                            placeholder="Enter product code" 
+                            class="w-full rounded border-gray-300 p-2 border"
+                        />
+                    </div>
+                    <button 
+                        type="button" 
+                        on:click={searchProduct} 
+                        class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                        disabled={productLoading}
+                    >
+                        {productLoading ? 'Adding...' : 'Add Product'}
+                    </button>
                 </div>
+                {#if productError}
+                    <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-2">
+                        {productError}
+                    </div>
+                {/if}
+            </div>
+
+            <!-- Add Empty Item Button -->
+            <div class="mb-4 flex justify-end">
                 <button 
                     type="button" 
-                    on:click={searchProduct} 
+                    on:click={addItem} 
                     class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-                    disabled={productLoading}
                 >
-                    {productLoading ? 'Adding...' : 'Add Product'}
+                    Add Empty Item
                 </button>
             </div>
-            {#if productError}
-                <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mt-2">
-                    {productError}
-                </div>
-            {/if}
-        </div>
-
-        <!-- Add Empty Item Button -->
-        <div class="mb-4 flex justify-end">
-            <button 
-                type="button" 
-                on:click={addItem} 
-                class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-            >
-                Add Empty Item
-            </button>
-        </div>
+        {/if}
 
         <div class="space-y-2">
             {#each invoice.items as item}
                 <div class="grid grid-cols-6 gap-2 text-sm">
                     <div>
                         <label class="block font-medium">Name</label>
-                        <input type="text" bind:value={item.name} class="mt-1 w-full rounded border-gray-300" />
+                        <input type="text" bind:value={item.name} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
                     </div>
                     <div>
                         <label class="block font-medium">HSN Code</label>
-                        <input type="text" bind:value={item.hsn} class="mt-1 w-full rounded border-gray-300" />
+                        <input type="text" bind:value={item.hsn} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
                     </div>
                     <div>
                         <label class="block font-medium">Qty</label>
-                        <input type="number" bind:value={item.qty} class="mt-1 w-full rounded border-gray-300" />
+                        <input type="number" bind:value={item.qty} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
                     </div>
                     <div>
                         <label class="block font-medium">Rate</label>
-                        <input type="number" bind:value={item.rate} class="mt-1 w-full rounded border-gray-300" />
+                        <input type="number" bind:value={item.rate} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
                     </div>
                     <div>
                         <label class="block font-medium">Amount</label>
-                        <input type="number" bind:value={item.amount} class="mt-1 w-full rounded border-gray-300" />
+                        <input type="number" bind:value={item.amount} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
                     </div>
                 </div>
             {/each}
@@ -509,11 +672,11 @@
     <div class="grid grid-cols-3 gap-4 border-t pt-4 text-sm">
         <div>
             <label class="block font-medium">CGST(9%)</label>
-            <input type="number" bind:value={invoice.cgst} class="mt-1 w-full rounded border-gray-300" />
+            <input type="number" bind:value={invoice.cgst} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
         </div>
         <div>
             <label class="block font-medium">SGST(9%)</label>
-            <input type="number" bind:value={invoice.sgst} class="mt-1 w-full rounded border-gray-300" />
+            <input type="number" bind:value={invoice.sgst} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
         </div>
         <div>
             <label class="block font-medium">Total After Tax</label>
@@ -527,19 +690,19 @@
         <div class="grid grid-cols-2 gap-4">
             <div>
                 <label class="block font-medium">Bank Name</label>
-                <input type="text" value={bank.name} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.name} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
             </div>
             <div>
                 <label class="block font-medium">Account No</label>
-                <input type="text" value={bank.accountNo} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.accountNo} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
             </div>
             <div>
                 <label class="block font-medium">IFSC Code</label>
-                <input type="text" value={bank.ifsc} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.ifsc} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
             </div>
             <div>
                 <label class="block font-medium">Branch</label>
-                <input type="text" value={bank.branch} class="mt-1 w-full rounded border-gray-300" />
+                <input type="text" value={bank.branch} class="mt-1 w-full rounded border-gray-300" disabled={viewOnly} />
             </div>
         </div>
     </div>
@@ -547,20 +710,57 @@
     <!-- Signature -->
     <div class="flex justify-between border-t pt-6">
         <div class="flex space-x-2">
-            <button 
-                type="button" 
-                on:click={saveInvoice} 
-                class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium"
-            >
-                Save Invoice
-            </button>
-            <button 
-                type="button" 
-                on:click={resetForm} 
-                class="bg-gray-600 hover:bg-gray-700 text-white px-6 py-2 rounded font-medium"
-            >
-                New Invoice
-            </button>
+            {#if viewOnly}
+                <button 
+                    type="button" 
+                    on:click={() => goto('/invoices')} 
+                    class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded font-medium"
+                >
+                    Back to Invoices
+                </button>
+                <button 
+                    type="button" 
+                    on:click={generatePDF} 
+                    class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded font-medium"
+                >
+                    Download PDF
+                </button>
+                <button 
+                    type="button" 
+                    on:click={() => {
+                        viewOnly = false;
+                        // Generate a new invoice number for the copy
+                        generateInvoiceNumber(false).then(newNumber => {
+                            // Create a copy of the invoice without the _id field
+                            const { _id, ...invoiceWithoutId } = invoice;
+                            // Update the invoice with the copy (without _id) and new invoice number
+                            invoice = {
+                                ...invoiceWithoutId,
+                                invoiceNo: newNumber,
+                                created_at: new Date() // Set a new creation date
+                            };
+                        });
+                    }} 
+                    class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium"
+                >
+                    Create Copy
+                </button>
+            {:else}
+                <button 
+                    type="button" 
+                    on:click={saveInvoice} 
+                    class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium"
+                >
+                    Save Invoice
+                </button>
+                <button 
+                    type="button" 
+                    on:click={resetForm} 
+                    class="bg-gray-600 hover:bg-gray-700 text-white px-6 py-2 rounded font-medium"
+                >
+                    New Invoice
+                </button>
+            {/if}
         </div>
         <div class="text-right">
             <p class="font-medium">For KAKATIYA PRINTING INKS</p>
